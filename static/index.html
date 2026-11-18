@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ripgrep-logviewer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Crect width=%2716%27 height=%2716%27 rx=%273%27 fill=%27%232d6fd0%27/%3E%3Ctext x=%278%27 y=%2712%27 font-size=%2710%27 text-anchor=%27middle%27 fill=%27white%27 font-family=%27monospace%27%3Erg%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #161a21; --panel2: #1c212a; --line: #262c37;
+    --text: #d7dde8; --muted: #8590a2; --accent: #4f9cf7; --accent2: #2d6fd0;
+    --hl-bg: #f5c84233; --hl: #ffd866; --err: #ff6b6b; --warn: #f2b84b; --info: #6cc3a0; --debug: #8b95a7;
+    --mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Consolas, Menlo, monospace;
+    --row: 20px;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 13px/1.5 system-ui, -apple-system, "Segoe UI", "Microsoft JhengHei", sans-serif; display: flex; flex-direction: column; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .3px; }
+  header h1 span { color: var(--accent); }
+  header .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  form#q { display: grid; grid-template-columns: 1fr; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=text], input[type=number], select {
+    background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    padding: 7px 10px; font: inherit; outline: none;
+  }
+  input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--accent); }
+  #pattern { flex: 1; min-width: 280px; font-family: var(--mono); font-size: 14px; }
+  #path { flex: 1; min-width: 260px; font-family: var(--mono); }
+  #glob { width: 200px; font-family: var(--mono); }
+  #context { width: 64px; }
+  label.chk { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; padding: 4px 8px; border-radius: 6px; border: 1px solid var(--line); }
+  label.chk:has(input:checked) { color: var(--text); border-color: var(--accent2); background: #4f9cf71a; }
+  label.chk input { margin: 0; accent-color: var(--accent); }
+  label.lbl { color: var(--muted); font-size: 12px; }
+  button { font: inherit; border-radius: 6px; padding: 7px 14px; cursor: pointer; border: 1px solid var(--line); background: var(--panel2); color: var(--text); }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent2); border-color: var(--accent2); color: #fff; font-weight: 600; }
+  button.primary:hover { background: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-family: var(--mono); font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); cursor: pointer; }
+  .chip:hover { color: var(--text); border-color: var(--accent); }
+
+  #status { display: flex; gap: 16px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; min-height: 30px; }
+  #status b { color: var(--text); font-weight: 600; }
+  #status .warn { color: var(--warn); }
+  #status .err { color: var(--err); white-space: pre-wrap; }
+  .spinner { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; display: inline-block; vertical-align: -2px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tabs { display: flex; gap: 2px; padding: 0 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .tab { padding: 8px 14px; cursor: pointer; color: var(--muted); border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+  main { flex: 1; overflow: hidden; position: relative; }
+  .pane { position: absolute; inset: 0; overflow: auto; display: none; }
+  .pane.active { display: block; }
+
+  /* 結果：虛擬捲動，只畫出看得到的列 */
+  #resultsPane { overflow: hidden; }
+  #resultsPane.active { display: flex; flex-direction: column; }
+  #stickyHead { flex: 0 0 auto; display: none; }
+  #results { flex: 1; overflow: auto; position: relative; font-family: var(--mono); font-size: 12.5px; }
+  #vspacer { position: relative; }
+  #vwin { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
+  .fhead { height: var(--row); line-height: var(--row); background: var(--panel2); color: var(--accent); padding: 0 16px; font-family: var(--mono); font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px solid var(--line); }
+  .ln { display: flex; height: var(--row); line-height: var(--row); padding: 0 16px 0 0; white-space: pre; cursor: pointer; }
+  .ln:hover { background: #ffffff0a; }
+  .ln .no { flex: 0 0 auto; width: 80px; text-align: right; padding-right: 12px; color: #566074; user-select: none; }
+  .ln .tx { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .ln.ctx .tx { color: var(--muted); }
+  .ln.match .no { color: var(--accent); }
+  .ln mark { background: var(--hl-bg); color: var(--hl); border-radius: 2px; padding: 0 1px; }
+  /* 可點擊追蹤的 ID（traceId、UUID、session id 等） */
+  .tid { text-decoration: underline dotted #6b7a92; text-underline-offset: 3px; cursor: pointer; }
+  .tid:hover { color: var(--accent); text-decoration-color: var(--accent); }
+  .ln .fn { flex: 0 0 auto; max-width: 240px; overflow: hidden; text-overflow: ellipsis; color: #9d8fe0; padding-right: 10px; }
+  #stickyHead.trace { color: var(--hl); }
+  .sep { height: var(--row); line-height: var(--row); color: #3a4352; padding-left: 92px; user-select: none; }
+  .lv-ERROR, .lv-FATAL { color: var(--err); font-weight: 600; }
+  .lv-WARN { color: var(--warn); font-weight: 600; }
+  .lv-INFO { color: var(--info); }
+  .lv-DEBUG, .lv-TRACE { color: var(--debug); }
+  .empty { color: var(--muted); padding: 40px; text-align: center; font-family: system-ui, sans-serif; }
+
+  /* 統計 */
+  #stats { padding: 16px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+  .card:hover { border-color: var(--accent); }
+  .card .k { font-size: 12px; color: var(--muted); }
+  .card .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; }
+  .box h3 { margin: 0 0 10px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .box h3 small { color: var(--muted); font-weight: 400; }
+  .box h3 .right { margin-left: auto; display: flex; gap: 6px; }
+  .seg { padding: 3px 10px; font-size: 12px; border-radius: 12px; }
+  .seg.on { background: var(--accent2); border-color: var(--accent2); color: #fff; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  @media (max-width: 1000px) { .grid2 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  td, th { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; width: 90px; }
+  td.lvl { width: 56px; font-family: var(--mono); }
+  td.mono { font-family: var(--mono); word-break: break-all; }
+  tr.click { cursor: pointer; }
+  tr.click:hover td { background: #ffffff08; }
+  .bar { height: 6px; background: var(--accent2); border-radius: 3px; margin-top: 3px; }
+  .ph { color: #c792ea; }
+  #timeline svg { width: 100%; height: 200px; display: block; }
+  #timeline .b { fill: var(--accent2); }
+  #timeline .b:hover { fill: var(--hl); }
+  #timeline text { fill: var(--muted); font-size: 10px; }
+  #timeline line { stroke: var(--line); }
+
+  /* 前後文視窗 */
+  dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 0; width: 96vw; max-width: 1800px; height: 90vh; }
+  dialog::backdrop { background: #000a; }
+  dialog .dh { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  dialog .dh .f { font-family: var(--mono); color: var(--accent); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 標題列用自然高度，內容區填滿剩餘空間：只有內容區一條捲軸 */
+  dialog[open] { display: flex; flex-direction: column; overflow: hidden; }
+  dialog .dh { flex: 0 0 auto; }
+  dialog .db { flex: 1 1 auto; min-height: 0; overflow: auto; font-family: var(--mono); font-size: 12.5px; padding: 6px 0; }
+  /* 前後文視窗：長行一律自動換行，完整顯示整行 log */
+  dialog .ln { height: auto; min-height: var(--row); white-space: pre-wrap; word-break: break-all; padding-top: 1px; padding-bottom: 1px; }
+  dialog .ln .tx { overflow: visible; text-overflow: clip; }
+  dialog .ln + .ln { border-top: 1px solid #ffffff08; }
+  dialog .ln.target { background: #4f9cf726; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>ripgrep</span>-logviewer</h1>
+  <span class="hint">Enter 搜尋 · Esc 取消 · 點任一行看前後文 · 點虛線底線的 ID 追蹤整個請求</span>
+</header>
+
+<form id="q" autocomplete="off">
+  <div class="row">
+    <input id="pattern" type="text" placeholder="搜尋字串或 regex，例如 ERROR|Exception、userId=123、timeout" autofocus>
+    <button class="primary" id="btnSearch" type="submit">搜尋</button>
+    <button id="btnCancel" type="button" disabled>取消</button>
+    <button id="btnTrace" type="button" title="把搜尋框的內容當作 traceId / sessionId，搜尋目前路徑下所有檔案並依時間排序">追蹤 ID</button>
+    <button id="btnStats" type="button">統計</button>
+  </div>
+  <div class="row">
+    <label class="lbl">路徑</label>
+    <input id="path" type="text" list="pathList" placeholder="目錄或檔案">
+    <datalist id="pathList"></datalist>
+    <label class="lbl">檔名</label>
+    <input id="glob" type="text" placeholder="*.log,!*debug*">
+    <label class="lbl">前後</label>
+    <input id="context" type="number" min="0" max="20" value="0" title="前後各顯示幾行 (-C)">
+  </div>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="fixed"> 純文字 -F</label>
+    <label class="chk"><input type="checkbox" id="ignoreCase" checked> 忽略大小寫 -i</label>
+    <label class="chk"><input type="checkbox" id="word"> 整字 -w</label>
+    <label class="chk"><input type="checkbox" id="zip"> 含 .gz -z</label>
+    <label class="chk"><input type="checkbox" id="sort" checked> 依檔名排序</label>
+    <span class="chips" id="history"></span>
+  </div>
+</form>
+
+<div id="status"><span>就緒</span></div>
+
+<div class="tabs">
+  <div class="tab active" data-pane="resultsPane">結果</div>
+  <div class="tab" data-pane="stats">統計</div>
+</div>
+
+<main>
+  <div class="pane active" id="resultsPane">
+    <div id="stickyHead" class="fhead"></div>
+    <div id="results">
+      <div id="vspacer"><div id="vwin"></div></div>
+      <div id="rEmpty" class="empty">輸入搜尋條件後按 Enter</div>
+    </div>
+  </div>
+  <div class="pane" id="stats"><div class="empty">按「統計」分析 log level、訊息排行、Exception 排行與時間分布</div></div>
+</main>
+
+<dialog id="ctxDlg">
+  <div class="dh">
+    <span class="f" id="ctxFile"></span>
+    <button id="ctxMore" type="button">前後再多 200 行</button>
+    <button id="ctxClose" type="button">關閉</button>
+  </div>
+  <div class="db" id="ctxBody"></div>
+</dialog>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    form: $('q'), pattern: $('pattern'), path: $('path'), glob: $('glob'), context: $('context'),
+    fixed: $('fixed'), ignoreCase: $('ignoreCase'), word: $('word'), zip: $('zip'), sort: $('sort'),
+    btnSearch: $('btnSearch'), btnCancel: $('btnCancel'), btnStats: $('btnStats'), btnTrace: $('btnTrace'),
+    status: $('status'), results: $('results'), stats: $('stats'), history: $('history'),
+    vspacer: $('vspacer'), vwin: $('vwin'), rEmpty: $('rEmpty'), stickyHead: $('stickyHead'),
+  };
+  const ROW_H = 20;       // 必須與 CSS --row 相同
+  const OVERSCAN = 30;    // 可視範圍上下多畫幾列，快速捲動時不會閃白
+
+  let es = null;          // 目前的 EventSource
+  let searchId = null;
+  // 虛擬列表資料：{t:'f', file} 檔名列、{t:'s', file} 分隔列、{t:'h', ...hit} 結果列
+  let rows = [];
+  let hitCount = 0;
+  let lastFile = null, lastLine = -1, ctxN = 0;
+  let renderQueued = false, lastRange = '';
+  let traceMode = null;   // 追蹤中的 ID（null = 一般搜尋）
+  let traceInfo = null;
+
+  const fmt = (n) => Number(n ?? 0).toLocaleString();
+  const fmtBytes = (b) => {
+    b = Number(b || 0);
+    const u = ['B', 'KB', 'MB', 'GB', 'TB']; let i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return b.toFixed(i ? 1 : 0) + ' ' + u[i];
+  };
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const LEVEL = /\b(ERROR|FATAL|WARN|WARNING|INFO|DEBUG|TRACE)\b/;
+
+  // ---------- 偏好與歷史（瀏覽器儲存不可用時就略過） ----------
+  const store = {
+    get(k, d) { try { return JSON.parse(localStorage.getItem('rglv.' + k)) ?? d; } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('rglv.' + k, JSON.stringify(v)); } catch {} },
+  };
+  function restore() {
+    const s = store.get('form', null);
+    if (!s) return;
+    for (const k of ['path', 'glob', 'context']) if (s[k] != null) els[k].value = s[k];
+    for (const k of ['fixed', 'ignoreCase', 'word', 'zip', 'sort']) if (s[k] != null) els[k].checked = s[k];
+  }
+  function save() {
+    store.set('form', {
+      path: els.path.value, glob: els.glob.value, context: els.context.value,
+      fixed: els.fixed.checked, ignoreCase: els.ignoreCase.checked, word: els.word.checked,
+      zip: els.zip.checked, sort: els.sort.checked,
+    });
+  }
+  function pushHistory(p) {
+    let h = store.get('history', []).filter((x) => x !== p);
+    h.unshift(p); h = h.slice(0, 8);
+    store.set('history', h); renderHistory();
+  }
+  function renderHistory() {
+    const h = store.get('history', []);
+    els.history.innerHTML = '';
+    for (const p of h) {
+      const c = document.createElement('span');
+      c.className = 'chip'; c.textContent = p.length > 28 ? p.slice(0, 28) + '…' : p; c.title = p;
+      c.onclick = () => { els.pattern.value = p; startSearch(); };
+      els.history.appendChild(c);
+    }
+  }
+
+  function params(extra = {}) {
+    const p = new URLSearchParams({
+      path: els.path.value.trim(), pattern: els.pattern.value, glob: els.glob.value.trim(),
+      context: els.context.value || '0', fixed: els.fixed.checked, ignoreCase: els.ignoreCase.checked,
+      word: els.word.checked, zip: els.zip.checked, sort: els.sort.checked, ...extra,
+    });
+    return p.toString();
+  }
+
+  function setStatus(html) { els.status.innerHTML = '<span>' + html + '</span>'; }
+
+  // rg 回報的警告（例如檔案讀取失敗、壓縮檔損壞）：數字可能少算，滑鼠移上去看詳細內容
+  function warnBadge(list) {
+    const lines = (list || []).map((x) => String(x).trim()).filter((x) => x && !/^-+$/.test(x));
+    if (!lines.length) return '';
+    return `<span class="warn" style="cursor:help" title="${esc(lines.join('\n'))}">⚠ 部分檔案無法讀取，結果可能少算（滑鼠移上查看）</span>`;
+  }
+
+  // ---------- 搜尋 ----------
+  function resetResults(msg) {
+    rows = []; hitCount = 0; lastFile = null; lastLine = -1; lastRange = ''; traceInfo = null;
+    ctxN = Number(els.context.value) || 0;
+    els.results.scrollTop = 0;
+    els.vspacer.style.height = '0px';
+    els.vwin.innerHTML = '';
+    els.stickyHead.style.display = 'none';
+    els.rEmpty.style.display = msg ? '' : 'none';
+    if (msg) els.rEmpty.textContent = msg;
+  }
+
+  function startSearch(opts = {}) {
+    const pattern = els.pattern.value;
+    traceMode = opts.trace || null;
+    if (!pattern) { els.pattern.focus(); return; }
+    stopSearch(true);
+    // 追蹤模式用固定的搜尋選項，不改動也不記住使用者的勾選，也不寫進搜尋歷史
+    if (!traceMode) { save(); pushHistory(pattern); }
+    showTab('resultsPane');
+    resetResults('');
+    if (traceMode) ctxN = 0;
+    const query = traceMode
+      ? params({ pattern: traceMode, fixed: true, word: false, ignoreCase: true, context: 0 })
+      : params();
+    els.btnCancel.disabled = false;
+    const t0 = performance.now();
+    setStatus('<span class="spinner"></span> 搜尋中…');
+
+    es = new EventSource('/api/search?' + query);
+    es.addEventListener('start', (e) => { searchId = JSON.parse(e.data).id; });
+    es.addEventListener('hits', (e) => {
+      addHits(JSON.parse(e.data));
+      scheduleRender(true);
+      setStatus(`<span class="spinner"></span> 搜尋中… 已取得 <b>${fmt(hitCount)}</b> 筆 · ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+    });
+    es.addEventListener('done', (e) => {
+      const d = JSON.parse(e.data);
+      finish();
+      render(true);
+      if (d.count === 0 && !d.error) resetResults('沒有符合的結果');
+      let s = `命中 <b>${fmt(d.matchLines)}</b> 行`;
+      if (d.count !== d.matchLines) s += `（含前後文共 ${fmt(d.count)} 行）`;
+      if (d.filesSearched) s += ` · ${fmt(d.filesMatched)} / ${fmt(d.filesSearched)} 個檔案`;
+      if (d.bytesSearched) s += ` · 掃描 ${fmtBytes(d.bytesSearched)}`;
+      s += ` · ${(d.elapsedMs / 1000).toFixed(2)}s`;
+      if (d.truncated) s += ` <span class="warn">⚠ 已達上限，只顯示前 ${fmt(d.count)} 筆，請縮小條件或用「統計」看全貌</span>`;
+      if (d.cancelled) s += ' <span class="warn">已取消</span>';
+      if (d.badLines) s += ` <span class="warn">${fmt(d.badLines)} 行無法解析已略過</span>`;
+      if (d.warnings) s += ` ${warnBadge(d.warnings.split('\n'))}`;
+      if (d.error) s += ` <span class="err">${esc(d.error)}</span>`;
+      if (traceMode && d.count > 0) {
+        arrangeTrace();
+        s = `<b>追蹤 ID</b> ${esc(traceMode)} · ${traceText(false)} · ` + s;
+      }
+      setStatus(s);
+    });
+    es.addEventListener('fail', (e) => {
+      finish();
+      resetResults('');
+      setStatus(`<span class="err">${esc(JSON.parse(e.data).message)}</span>`);
+    });
+    es.onerror = async () => {
+      if (!es) return;
+      finish();
+      render(true);
+      setStatus(`<span class="err">${await diagnose()}</span>`);
+    };
+  }
+
+  // 連線斷掉時判斷原因
+  async function diagnose() {
+    if (location.protocol === 'file:') {
+      return '請不要直接開啟 index.html 檔案，要先執行 start.bat / start.sh，再開 http://127.0.0.1:8099';
+    }
+    try {
+      const r = await fetch('/api/config', { cache: 'no-store' });
+      if (!r.ok) return `後端回應 HTTP ${r.status}，請看後端執行視窗的訊息`;
+      return `搜尋連線中斷，但後端仍在執行（已顯示 ${fmt(hitCount)} 筆）。請看後端執行視窗是否有錯誤訊息`;
+    } catch {
+      return '連不到後端：後端程式可能已關閉，請重新啟動';
+    }
+  }
+
+  function finish() {
+    if (es) { es.close(); es = null; }
+    searchId = null;
+    els.btnCancel.disabled = true;
+  }
+
+  function stopSearch(silent) {
+    if (searchId) fetch('/api/cancel?id=' + encodeURIComponent(searchId), { method: 'POST' }).catch(() => {});
+    if (es) {
+      finish();
+      render(true);
+      if (!silent) setStatus(`已取消 · 已顯示 <b>${fmt(hitCount)}</b> 筆`);
+    }
+  }
+
+  function addHits(hits) {
+    for (const h of hits) {
+      if (h.file !== lastFile) {
+        rows.push({ t: 'f', file: h.file });
+        lastFile = h.file; lastLine = -1;
+      } else if (ctxN > 0 && lastLine > 0 && h.line > lastLine + 1) {
+        rows.push({ t: 's', file: h.file });
+      }
+      h.t = 'h';
+      rows.push(h);
+      lastLine = h.line;
+      hitCount++;
+    }
+  }
+
+  function scheduleRender(force) {
+    if (force) lastRange = '';
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(() => { renderQueued = false; render(); });
+  }
+
+  // 只畫出可視範圍（加上 OVERSCAN）內的列
+  function render(force) {
+    if (force) lastRange = '';
+    const total = rows.length;
+    els.vspacer.style.height = total * ROW_H + 'px';
+    if (!total) { els.vwin.innerHTML = ''; els.stickyHead.style.display = 'none'; return; }
+    const st = els.results.scrollTop, vh = els.results.clientHeight || 600;
+    const first = Math.floor(st / ROW_H);
+    const start = Math.max(0, first - OVERSCAN);
+    const end = Math.min(total, Math.ceil((st + vh) / ROW_H) + OVERSCAN);
+    const key = start + ':' + end;
+    if (key !== lastRange) {
+      lastRange = key;
+      let html = '';
+      for (let i = start; i < end; i++) html += rowHtml(rows[i], i);
+      els.vwin.style.transform = `translateY(${start * ROW_H}px)`;
+      els.vwin.innerHTML = html;
+    }
+    // 固定在頂端的檔名：目前第一列所屬的檔案
+    const top = rows[Math.min(first, total - 1)];
+    const head = traceInfo ? '追蹤 ID：' + traceMode + ' · ' + traceText(true) : top.file;
+    els.stickyHead.style.display = 'block';
+    els.stickyHead.classList.toggle('trace', !!traceInfo);
+    if (els.stickyHead.textContent !== head) els.stickyHead.textContent = head;
+  }
+
+  function rowHtml(r, i) {
+    if (r.t === 'f') return `<div class="fhead" title="${esc(r.file)}">${esc(r.file)}</div>`;
+    if (r.t === 's') return '<div class="sep">⋯</div>';
+    return `<div class="ln ${r.kind === 'match' ? 'match' : 'ctx'}" data-i="${i}"><span class="no">${r.line}</span>${r.fn ? `<span class="fn" title="${esc(r.file)}">${esc(r.fn)}</span>` : ''}<span class="tx">${highlight(r.text, r.ranges)}${r.cut ? ' <span style="color:#566074">…(截斷)</span>' : ''}</span></div>`;
+  }
+
+  els.results.addEventListener('scroll', () => scheduleRender(false), { passive: true });
+  window.addEventListener('resize', () => scheduleRender(true));
+
+  // 把命中區間包成 <mark>，其餘文字跳脫
+  function highlight(text, ranges) {
+    if (!ranges || !ranges.length) return deco(esc(text));
+    let out = '', pos = 0;
+    for (const [s, e] of ranges) {
+      if (s < pos) continue;
+      out += deco(esc(text.slice(pos, s))) + '<mark>' + esc(text.slice(s, e)) + '</mark>';
+      pos = e;
+    }
+    return out + deco(esc(text.slice(pos)));
+  }
+  // 只替換第一個 level 字樣
+  function colorLevel(html) {
+    return html.replace(LEVEL, (m) => `<span class="lv-${m === 'WARNING' ? 'WARN' : m}">${m}</span>`);
+  }
+
+  // ---------- 追蹤 ID ----------
+  // 可追蹤的 ID（三種，命中任一即可點擊）：
+  //  1. 具名欄位的值：traceId / trace_id / X-Trace-Id / requestId / reqId / correlationId / spanId /
+  //     sessionId / session_id / JSESSIONID / sid，支援 key=value、key: value、"key":"value"
+  //  2. UUID
+  //  3. 12~64 位、同時含數字與字母的 hex（例如 session id、trace code、Filter 產生的 traceId）
+  // 建議在 log 格式寫成「traceId=%X{traceId}」這種具名欄位，不論值長什麼樣都一定認得到。
+  const ID_KEYS = 'trace[_-]?id|x-trace-id|request[_-]?id|req[_-]?id|correlation[_-]?id|span[_-]?id|session[_-]?id|jsessionid|sid';
+  const ID_RE = new RegExp(
+    `(?<=\\b(?:${ID_KEYS})"?\\s{0,2}[=:]\\s{0,2}"?)[\\w-]{4,128}` +
+    '|\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b' +
+    '|\\b(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,64}\\b', 'gi');
+  function linkIds(html) {
+    return html.replace(ID_RE, (m) => `<span class="tid" data-id="${m}" title="點擊追蹤此 ID 的所有 log">${m}</span>`);
+  }
+  function deco(escaped) { return linkIds(colorLevel(escaped)); }
+
+  function traceId(id) {
+    if ($('ctxDlg').open) $('ctxDlg').close();
+    els.pattern.value = id;    // 只把 ID 顯示在搜尋框，勾選項目維持原樣
+    startSearch({ trace: id });
+  }
+
+  const TS_RE = /(\d{4})[-/](\d{2})[-/](\d{2})[ T](\d{2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,3}))?)?/;
+  // 追蹤結果改成依時間排序，多個檔案（多台 VM）合併成同一條時間軸
+  function arrangeTrace() {
+    const hits = rows.filter((r) => r.t === 'h');
+    const files = new Set(hits.map((h) => h.file));
+    // 來源標籤：去掉所有檔案共同的上層目錄，同名檔案（不同 VM）才分得出來，例如 vm1\gate_web-…
+    const list = [...files];
+    let prefix = list[0] || '';
+    for (const f of list) while (prefix && !f.startsWith(prefix)) prefix = prefix.slice(0, -1);
+    prefix = prefix.slice(0, Math.max(prefix.lastIndexOf('/'), prefix.lastIndexOf('\\')) + 1);
+    let prevKey = '', prevFile = null;
+    hits.forEach((h, i) => {
+      if (h.file !== prevFile) { prevKey = ''; prevFile = h.file; }
+      const m = TS_RE.exec(h.text.slice(0, 220));
+      // 沒有時間戳的行（例如 stack trace）沿用同檔案上一行的時間
+      h.ts = m ? `${m[1]}-${m[2]}-${m[3]} ${m[4]}:${m[5]}:${m[6] ?? '00'}.${(m[7] ?? '0').padEnd(3, '0')}` : prevKey;
+      prevKey = h.ts;
+      h.fn = files.size > 1 ? h.file.slice(prefix.length) : null;
+      h.ord = i;
+    });
+    hits.sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : a.ord - b.ord));
+    const withTs = hits.filter((h) => h.ts);
+    traceInfo = { lines: hits.length, files: files.size, from: withTs[0]?.ts, to: withTs[withTs.length - 1]?.ts };
+    rows = hits;
+    els.results.scrollTop = 0;
+    render(true);
+  }
+  function traceText(withFiles) {
+    const t = traceInfo;
+    if (!t) return '';
+    let s = `${fmt(t.lines)} 行`;
+    if (withFiles || t.files > 1) s += ` · ${t.files} 個檔案`;
+    if (t.from && t.to) {
+      const ms = new Date(t.to.replace(' ', 'T')) - new Date(t.from.replace(' ', 'T'));
+      const sec = ms / 1000;
+      const dur = sec < 60 ? `${sec.toFixed(sec < 10 ? 1 : 0)} 秒` : sec < 3600 ? `${Math.floor(sec / 60)} 分 ${Math.round(sec % 60)} 秒` : `${(sec / 3600).toFixed(1)} 小時`;
+      s += ` · ${t.from.slice(0, 19)} → ${t.to.slice(t.from.slice(0, 10) === t.to.slice(0, 10) ? 11 : 0, 19)}（共 ${dur}）`;
+    }
+    return s;
+  }
+
+  // ---------- 前後文 ----------
+  let ctxState = null;
+  async function openContext(file, line, radius = 50) {
+    ctxState = { file, line, radius };
+    $('ctxFile').textContent = `${file} : ${line}`;
+    $('ctxBody').innerHTML = '<div class="empty"><span class="spinner"></span></div>';
+    if (!$('ctxDlg').open) $('ctxDlg').showModal();
+    const r = await fetch(`/api/context?file=${encodeURIComponent(file)}&line=${line}&radius=${radius}`);
+    const d = await r.json();
+    if (!r.ok) { $('ctxBody').innerHTML = `<div class="empty err">${esc(d.message)}</div>`; return; }
+    let html = '';
+    for (const l of d.lines) {
+      html += `<div class="ln${l.n === line ? ' target' : ''}"><span class="no">${l.n}</span><span class="tx">${deco(esc(l.text))}</span></div>`;
+    }
+    $('ctxBody').innerHTML = html;
+    $('ctxBody').querySelector('.target')?.scrollIntoView({ block: 'center' });
+  }
+  els.results.addEventListener('click', (e) => {
+    const tid = e.target.closest('.tid');
+    if (tid && !window.getSelection().toString()) { traceId(tid.dataset.id); return; }
+    const ln = e.target.closest('.ln');
+    if (!ln || window.getSelection().toString()) return;
+    const r = rows[Number(ln.dataset.i)];
+    if (r) openContext(r.file, r.line);
+  });
+  $('ctxClose').onclick = () => $('ctxDlg').close();
+  $('ctxBody').addEventListener('click', (e) => {
+    const tid = e.target.closest('.tid');
+    if (tid && !window.getSelection().toString()) traceId(tid.dataset.id);
+  });
+  $('ctxMore').onclick = () => ctxState && openContext(ctxState.file, ctxState.line, Math.min(500, ctxState.radius + 200));
+
+  // ---------- 統計 ----------
+  let msgLevel = 'ALL';
+
+  async function runStats() {
+    save();
+    showTab('stats');
+    els.stats.innerHTML = '<div class="empty"><span class="spinner"></span> 統計中…（大檔案需要幾秒）</div>';
+    els.btnStats.disabled = true;
+    try {
+      const r = await fetch('/api/stats?' + params());
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.message);
+      renderStats(d);
+      loadMessages(msgLevel);
+    } catch (e) {
+      els.stats.innerHTML = `<div class="empty err">${esc(e.message)}</div>`;
+    } finally {
+      els.btnStats.disabled = false;
+    }
+  }
+
+  function renderStats(d) {
+    const order = ['FATAL', 'ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'];
+    const total = Object.values(d.levels).reduce((a, b) => a + b, 0);
+    let html = `<div class="cards"><div class="card" title="含 level 標記的行數"><div class="k">總行數(有 level)</div><div class="v">${fmt(total)}</div></div>`;
+    for (const lv of order) {
+      if (d.levels[lv] == null) continue;
+      html += `<div class="card" data-search="\\b${lv}\\b"><div class="k lv-${lv}">${lv}</div><div class="v">${fmt(d.levels[lv])}</div></div>`;
+    }
+    html += `</div>`;
+
+    const src = d.timelineSource === 'search' ? `符合「${esc(els.pattern.value)}」的行` : 'ERROR 行';
+    html += `<div class="box"><h3>時間分布<small id="tlInfo">${src}</small></h3><div id="timeline"></div></div>`;
+
+    const levelsBtns = ['ALL', 'ERROR', 'WARN', 'INFO', 'DEBUG']
+      .filter((l) => l === 'ALL' || d.levels[l] != null)
+      .map((l) => `<button type="button" class="seg" data-lv="${l}">${l === 'ALL' ? '全部' : l}</button>`).join('');
+    html += `<div class="box"><h3>訊息排行
+        <small id="msgInfo">把時間、數字、UUID、IP、session id 等變動部分正規化後歸類${els.pattern.value ? `；只統計符合「${esc(els.pattern.value)}」的行` : ''}</small>
+        <span class="right">${levelsBtns}</span></h3>
+      <div id="messages"></div></div>`;
+
+    html += `<div class="grid2"><div class="box"><h3>Exception / Error 類別排行<small>點擊可搜尋</small></h3>`;
+    html += tableOf(d.exceptions, 'name', 'data-exc');
+    html += `</div><div class="box"><h3>各檔案命中行數<small>${d.files.length ? '' : '需要先輸入搜尋字串'}</small></h3>`;
+    html += tableOf(d.files, 'file', 'data-file');
+    html += `</div></div><div style="color:var(--muted);font-size:12px">統計耗時 ${(d.elapsedMs / 1000).toFixed(2)}s ${warnBadge(d.warnings)}</div>`;
+    els.stats.innerHTML = html;
+    drawTimeline(d.timeline);
+  }
+
+  let msgSeq = 0;
+  let msgRows = [];
+  async function loadMessages(level) {
+    msgLevel = level;
+    document.querySelectorAll('.seg').forEach((b) => b.classList.toggle('on', b.dataset.lv === level));
+    const box = $('messages');
+    if (!box) return;
+    const seq = ++msgSeq;
+    box.innerHTML = '<div class="empty" style="padding:16px"><span class="spinner"></span> 統計訊息中…</div>';
+    try {
+      const r = await fetch('/api/messages?' + params({ level }));
+      const d = await r.json();
+      if (seq !== msgSeq) return;            // 已切換到其他 level
+      if (!r.ok) throw new Error(d.message);
+      msgRows = d.top;
+      if (!d.top.length) { box.innerHTML = '<div style="color:var(--muted)">（無資料）</div>'; return; }
+      const max = d.top[0].count;
+      let t = '<table><thead><tr><th>次數</th><th>Level</th><th>訊息樣板（點擊看實際範例的前後文）</th></tr></thead><tbody>';
+      d.top.forEach((m, i) => {
+        const pct = d.total ? (m.count / d.total * 100) : 0;
+        t += `<tr class="click" data-m="${i}" title="範例：${esc(m.example)}">
+          <td class="num">${fmt(m.count)}<div style="color:var(--muted);font-size:11px">${pct >= 0.1 ? pct.toFixed(1) : '<0.1'}%</div></td>
+          <td class="lvl lv-${m.level}">${m.level}</td>
+          <td class="mono">${tpl(m.template)}<div class="bar" style="width:${Math.max(0.5, m.count / max * 100)}%"></div></td></tr>`;
+      });
+      box.innerHTML = t + '</tbody></table>';
+      let info = `共 ${fmt(d.total)} 行 · ${fmt(d.distinct)} 種訊息 · 顯示前 ${d.top.length} 種 · ${(d.elapsedMs / 1000).toFixed(2)}s`;
+      if (d.overflow) info += ` · ⚠ 種類超過上限，${fmt(d.overflow)} 行未歸類`;
+      $('msgInfo').innerHTML = esc(info) + ' ' + warnBadge(d.warnings);
+    } catch (e) {
+      if (seq === msgSeq) box.innerHTML = `<div class="err">${esc(e.message)}</div>`;
+    }
+  }
+  // 樣板中的 <N>、<UUID> 等代號上色
+  function tpl(s) {
+    return esc(s).replace(/&lt;(N|UUID|IP|HEX|時間)&gt;/g, '<span class="ph">&lt;$1&gt;</span>');
+  }
+
+  function tableOf(rows, key, attr) {
+    if (!rows.length) return '<div style="color:var(--muted)">（無資料）</div>';
+    const max = rows[0].count;
+    let t = '<table><tbody>';
+    for (const r of rows) {
+      t += `<tr class="click" ${attr}="${esc(r[key])}"><td class="mono">${esc(r[key])}<div class="bar" style="width:${Math.max(1, r.count / max * 100)}%"></div></td><td class="num">${fmt(r.count)}</td></tr>`;
+    }
+    return t + '</tbody></table>';
+  }
+
+  els.stats.addEventListener('click', (e) => {
+    const seg = e.target.closest('.seg');
+    if (seg) { loadMessages(seg.dataset.lv); return; }
+    const msg = e.target.closest('[data-m]');
+    if (msg) { const m = msgRows[Number(msg.dataset.m)]; if (m) openContext(m.file, m.line); return; }
+    const card = e.target.closest('[data-search]');
+    const exc = e.target.closest('[data-exc]');
+    const file = e.target.closest('[data-file]');
+    if (card) { els.fixed.checked = false; els.ignoreCase.checked = false; els.pattern.value = card.dataset.search; startSearch(); }
+    else if (exc) { els.fixed.checked = true; els.pattern.value = exc.dataset.exc; startSearch(); }
+    else if (file) { els.path.value = file.dataset.file; startSearch(); }
+  });
+
+  // 依時間範圍自動選擇區間寬度，最多約 160 根長條
+  function drawTimeline(tl) {
+    const box = $('timeline');
+    const keys = Object.keys(tl);
+    if (!keys.length) { box.innerHTML = '<div style="color:var(--muted)">找不到時間戳（支援 yyyy-MM-dd HH:mm 格式）</div>'; return; }
+    const toMs = (k) => new Date(k.replace(' ', 'T') + ':00').getTime();
+    const t0 = toMs(keys[0]), t1 = toMs(keys[keys.length - 1]);
+    const spanMin = (t1 - t0) / 60000 + 1;
+    const steps = [1, 2, 5, 10, 15, 30, 60, 120, 180, 360, 720, 1440, 10080];
+    const step = steps.find((s) => spanMin / s <= 160) ?? 10080;
+    const n = Math.floor(spanMin / step) + 1;
+    const buckets = new Array(n).fill(0);
+    for (const k of keys) buckets[Math.floor((toMs(k) - t0) / 60000 / step)] += tl[k];
+    const max = Math.max(...buckets);
+    const peakIdx = buckets.indexOf(max);
+
+    const W = 1000, H = 200, padL = 46, padB = 22, padT = 8;
+    const bw = (W - padL) / n;
+    const label = (ms) => {
+      const d = new Date(ms), p = (x) => String(x).padStart(2, '0');
+      return spanMin > 1440 ? `${p(d.getMonth() + 1)}/${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}` : `${p(d.getHours())}:${p(d.getMinutes())}`;
+    };
+    let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+    for (let i = 0; i <= 4; i++) {
+      const y = padT + (H - padB - padT) * (1 - i / 4);
+      svg += `<line x1="${padL}" x2="${W}" y1="${y}" y2="${y}"/><text x="${padL - 6}" y="${y + 3}" text-anchor="end">${fmt(Math.round(max * i / 4))}</text>`;
+    }
+    buckets.forEach((v, i) => {
+      if (!v) return;
+      const h = (H - padB - padT) * v / max;
+      const x = padL + i * bw;
+      svg += `<rect class="b" x="${x + 0.5}" y="${H - padB - h}" width="${Math.max(1, bw - 1)}" height="${h}"><title>${label(t0 + i * step * 60000)} 起 ${step} 分鐘：${fmt(v)}</title></rect>`;
+    });
+    const ticks = Math.min(8, n);
+    for (let i = 0; i < ticks; i++) {
+      const idx = Math.round(i * (n - 1) / Math.max(1, ticks - 1));
+      const anchor = i === 0 ? 'start' : i === ticks - 1 ? 'end' : 'middle';
+      const tx = i === 0 ? padL : i === ticks - 1 ? W - 2 : padL + idx * bw + bw / 2;
+      svg += `<text x="${tx}" y="${H - 6}" text-anchor="${anchor}">${label(t0 + idx * step * 60000)}</text>`;
+    }
+    box.innerHTML = svg + '</svg>';
+    $('tlInfo').textContent += ` · 每 ${step >= 60 ? step / 60 + ' 小時' : step + ' 分鐘'}一格 · 高峰 ${label(t0 + peakIdx * step * 60000)}（${fmt(max)}）`;
+  }
+
+  // ---------- 其他 ----------
+  function showTab(name) {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.pane === name));
+    document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('active', p.id === name));
+    if (name === 'resultsPane') scheduleRender(true);
+  }
+  document.querySelectorAll('.tab').forEach((t) => t.onclick = () => showTab(t.dataset.pane));
+
+  els.form.onsubmit = (e) => { e.preventDefault(); startSearch(); };
+  els.btnCancel.onclick = () => stopSearch(false);
+  els.btnStats.onclick = runStats;
+  els.btnTrace.onclick = () => {
+    const id = els.pattern.value.trim();
+    if (!id) { els.pattern.focus(); setStatus('請先在搜尋框輸入要追蹤的 traceId / sessionId'); return; }
+    traceId(id);
+  };
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && es) stopSearch(false); });
+
+  async function init() {
+    restore(); renderHistory();
+    try {
+      const cfg = await (await fetch('/api/config')).json();
+      // 上次記住的路徑若不在這次允許的目錄內（換了 --root 啟動），就改回第一個 root
+      const norm = (x) => x.replace(/\\/g, '/').toLowerCase();
+      const inRoot = (p) => cfg.roots.some((r) => norm(p).startsWith(norm(r)));
+      if (!els.path.value || !inRoot(els.path.value)) els.path.value = cfg.roots[0];
+      const dl = $('pathList');
+      for (const r of cfg.roots) dl.insertAdjacentHTML('beforeend', `<option value="${esc(r)}">`);
+      const files = await (await fetch('/api/files?path=' + encodeURIComponent(cfg.roots[0]))).json();
+      if (Array.isArray(files)) {
+        for (const f of files.slice(0, 300)) dl.insertAdjacentHTML('beforeend', `<option value="${esc(f.path)}">${fmtBytes(f.size)}</option>`);
+        const totalSize = files.reduce((a, f) => a + f.size, 0);
+        setStatus(`就緒 · ${esc(cfg.roots.join(', '))} 底下有 <b>${fmt(files.length)}</b> 個檔案，共 ${fmtBytes(totalSize)} · 單次搜尋上限 ${fmt(cfg.maxResults)} 筆`);
+      }
+    } catch (e) {
+      setStatus(`<span class="err">${await diagnose()}</span>`);
+    }
+  }
+  // ---------- 自我測試：開 http://127.0.0.1:8099/?selftest ----------
+  // 修改 ID 偵測或追蹤功能後執行，確認 traceId / sessionId 仍然能被認出來、一般文字不會被誤判。
+  function selfTest() {
+    const cases = [
+      // [說明, 輸入, 應該被認成可點擊 ID 的值]
+      ['traceId=（Logback 風格）', '[traceId=f2ee4e4519f9919c] ok', ['f2ee4e4519f9919c']],
+      ['traceId 非 hex 值', 'traceId=abc123xyz done', ['abc123xyz']],
+      ['JSON 的 traceId', '{"traceId":"7d3f9a","msg":"x"}', ['7d3f9a']],
+      ['sessionId 純數字', 'sessionId=1234567 login', ['1234567']],
+      ['建議格式：pipe 欄位 traceId/sessionId', 'ERROR|2026-11-10 00:00:17|C|m|34|failed|traceId=a1b2c3d4e5f60718|sessionId=9f86d081884c', ['a1b2c3d4e5f60718', '9f86d081884c']],
+      ['JSESSIONID', 'JSESSIONID=3F2A9C7D1E4B5A6C8D0E1F2A3B4C5D6E', ['3F2A9C7D1E4B5A6C8D0E1F2A3B4C5D6E']],
+      ['gate_web 格式的 session id', 'ERROR|192.0.2.1|demo_user|9B8A7C6D5E4F3A2B1C0D9E8F7A6B5C4D|https-jsse-nio-443-exec-188|2026-11-10 00:02:52|C|Wrong Key!!dce', ['9B8A7C6D5E4F3A2B1C0D9E8F7A6B5C4D']],
+      ['UUID', 'removeSession |123e4567-e89b-12d3-a456-426614174000 session=00112233-4455-6677-8899-aabbccddeeff', ['123e4567-e89b-12d3-a456-426614174000', '00112233-4455-6677-8899-aabbccddeeff']],
+      ['trace code', 'trace code: 9F3A0B11C2D4E5F6', ['9F3A0B11C2D4E5F6']],
+      ['12 位 hex', 'id a1b2c3d4e5f6 end', ['a1b2c3d4e5f6']],
+      ['不應誤判：純數字訂單編號', 'orderId=12345678901234567890', []],
+      ['不應誤判：類別名稱', 'com.example.facades.impl.InvoiceServiceImpl', []],
+      ['不應誤判：時間與短 hex', 'deadbeef cafe 2026-11-10 10:11:12', []],
+      ['不應誤判：執行緒名稱', 'https-jsse-nio-443-exec-1234567', []],
+      ['不應誤判：inside 不是 sid', 'inside=value12', []],
+    ];
+    let pass = 0;
+    const fails = [];
+    for (const [name, input, expected] of cases) {
+      const got = input.match(ID_RE) || [];
+      if (JSON.stringify(got) === JSON.stringify(expected)) pass++;
+      else fails.push(`${name}：預期 ${JSON.stringify(expected)}，實際 ${JSON.stringify(got)}`);
+    }
+    // ID 連結不能破壞 HTML 跳脫（防 XSS）
+    const html = deco(esc('<img src=x onerror=alert(1)> traceId=abc123'));
+    if (!html.includes('<img') && html.includes('data-id="abc123"')) pass++;
+    else fails.push('HTML 跳脫：ID 連結破壞了跳脫 → ' + html);
+
+    const total = pass + fails.length;
+    console.log(`[selftest] 通過 ${pass} / ${total}`, fails);
+    setStatus(fails.length
+      ? `<span class="err">✗ 前端自我測試：${fails.length} 項失敗（共 ${total} 項）<br>${fails.map(esc).join('<br>')}</span>`
+      : `<b>✓ 前端自我測試全部通過</b>（${total} 項：traceId / sessionId / UUID / hex ID 偵測與 HTML 跳脫）`);
+    return fails.length === 0;
+  }
+  window.rglvSelfTest = selfTest;
+
+  init().then(() => { if (new URLSearchParams(location.search).has('selftest')) selfTest(); });
+})();
+</script>
+</body>
+</html>

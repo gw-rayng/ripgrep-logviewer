@@ -1,0 +1,15 @@
+# log 可能含客戶 IP、帳號、session id 等個資，一律不進版控／不隨專案分享
+logs/*
+!logs/.gitkeep
+
+# IntelliJ：編譯輸出與個人設定
+out/
+.idea/workspace.xml
+.idea/material_theme_project_new.xml
+.idea/shelf/
+
+# 其他
+*.class
+*.log
+.DS_Store
+Thumbs.db
